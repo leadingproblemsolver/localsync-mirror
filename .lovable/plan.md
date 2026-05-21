@@ -1,123 +1,133 @@
-## Goal
 
-Close the gaps still open after the P0–P3 schema unification, per `itisinfactjson.json`. The 5 critical-path fixes already shipped (auth routing, `resetPassword`, force-resolve artifact, resolve-failure toast, unified schema). The 11 issues below are the remainder, ordered by the spec's phase 2/3 plus the cheap deletes flagged "vestigial".
+# P0+P1 Open Gaps Implementation Plan
 
-## Changes
+Scope: G1, G2 (P0) + G6, G7, G8, G9 (P1). Six gaps, ordered from data layer up. Each gap has its own pass/fail metric from the registry.
 
-### 1. `db/schema.sql` — add `suggestions_shown` JSONB to `incident_events`
-Issue #3: telemetry is narrower than UI. Currently only `suggested_action` (rank-1) is persisted; the user actually saw top-3.
+## G1 — Team visibility (orgs + memberships)
 
-Append, idempotent, inside the existing `BEGIN`:
-```sql
-ALTER TABLE incident_events
-  ADD COLUMN IF NOT EXISTS suggestions_shown JSONB NOT NULL DEFAULT '[]'::jsonb;
-ALTER TABLE incident_events DROP CONSTRAINT IF EXISTS incident_events_suggestions_is_array;
-ALTER TABLE incident_events
-  ADD CONSTRAINT incident_events_suggestions_is_array
-  CHECK (jsonb_typeof(suggestions_shown) = 'array');
-```
-Re-runnable; no backfill needed (default `[]`).
+Replace per-`owner_id` RLS with org-scoped RLS so teammates see each other's incidents.
 
-### 2. `src/components/SuggestionsBox.jsx` → expose the full ranked list upward
-- Compute `ranked` as `{ source, items: string[] }` (top-3, same logic).
-- Add new prop `onRankedChange?: (ranked) => void`; call it in a `useEffect` whenever `ranked` changes.
-- Add an explicit empty-state row when **service has zero patterns** (issue #9): `"No history for {service} yet — using heuristics."` shown above the heuristic list.
+**Schema migration** (`supabase/migrations/<ts>_orgs.sql`):
+- New tables:
+  - `organizations(id uuid pk, name text, slug text unique, created_date timestamptz)`
+  - `org_members(org_id uuid, user_id uuid, role text check in ('owner','admin','member'), joined_at timestamptz, pk(org_id,user_id))`
+- Add `org_id uuid references organizations` to `incidents`, `patterns`, `artifacts`. `incident_events` inherits via parent incident.
+- Backfill: for each existing `owner_id`, create a personal org `{user}'s workspace`, set membership owner, copy into `org_id`. Make `org_id NOT NULL` after backfill.
+- Security definer fn `is_org_member(_org uuid, _user uuid) returns boolean` to avoid recursive RLS.
+- Replace all `owner_id = auth.uid()` policies with `is_org_member(org_id, auth.uid())`. `incident_events` policy joins through incident. Insert WITH CHECK requires membership.
+- Drop old `patterns_identity_unique (owner_id, service, symptom_fingerprint, first_action)` and recreate keyed on `(org_id, service, canonical_service, symptom_fingerprint, first_action)` — see G2.
+- Trigger `auto_create_personal_org()` on new auth.users via `handle_new_user` — creates an org named `<email-local>` and inserts the user as `owner`. Stores resulting `org_id` for client default.
 
-### 3. `src/pages/IncidentDetail.jsx` → lift ranked suggestions into state
-- `const [ranked, setRanked] = useState({ source: 'heuristic', items: [] })`.
-- Pass `onRankedChange={setRanked}` to `SuggestionsBox`.
-- Pass `topSuggestions={ranked.items}` to `AddEventForm` (replacing today's single `topSuggestion`).
+**Client**:
+- `src/lib/org.js`: `getCurrentOrgId()` — loads from `org_members` by `auth.uid()`, caches in memory; falls back to first membership. Single-org per user in V1.
+- `base44Client.js`: extend `createEntityClient` with an optional `withOrg` flag; on `create`, auto-stamp `org_id` from `getCurrentOrgId()`. Keep `owner_id` writes for audit (who created), gated behind a `created_by` rename later.
+- Update `NewIncident`, `ResolveControls` (pattern create), artifact create paths to call the org-aware client.
+- Replace `FEATURE_FLAGS.P2_USER_ISOLATION` reads with org stamping unconditionally.
 
-### 4. `src/components/AddEventForm.jsx` — persist top-3
-- Accept `topSuggestions: string[]` (keep `topSuggestion` as a fallback alias for safety).
-- On first-event create, set `payload.suggested_action = topSuggestions[0] ?? null` **and** `payload.suggestions_shown = topSuggestions.slice(0, 3)`.
+**Test metric**: two users in same org each create one incident; each sees both in `Home` list; both can append events to either; no RLS rejections.
 
-### 5. `src/components/ResolveControls.jsx` — failure-aware scoring guard
-Issue #7: `failure_count` is recorded but never used. Make resolve write reflect the spec's intent: when a previously-failed pattern is reinforced as success, leave failure_count intact (already does); but **also** drop a hard rule so a pattern with `failure_count > success_count + 1` doesn't get further-inflated on a coincidental success — append a one-line `// gap #7: scoring penalty consumed in SuggestionsBox via successRate` comment and move the actual penalty into the suggestions ranker (step 6). No DB-shape change here.
+## G2 — Service name normalization
 
-### 6. `src/components/SuggestionsBox.jsx` — apply failure penalty in ranking
-Replace the secondary sort tie-breaker with a Laplace-smoothed success rate, then overlap:
-```js
-const successRate = p => (p.success_count + 1) / (p.success_count + p.failure_count + 2);
-// sort: overlap desc, then successRate desc, then success_count desc
-```
-Patterns with high failure counts now sink even when overlap matches.
+Canonical bucket per logical service so `payments-api ≠ payment-api ≠ payments` collapses.
 
-### 7. `src/components/DivergenceSignal.jsx` + `src/lib/artifact.js` — full-sequence divergence
-Issue #11. Add a small helper `computeDivergence(events)` in `src/lib/divergence.js` that:
-- iterates events sorted by `step_order`,
-- for each event with a non-null `suggested_action`, compares `normalizeAction(suggested_action)` vs `normalizeAction(message)`,
-- returns `{ total, diverged, firstDivergentStep, divergenceRate }`.
+**Lib** (`src/lib/service.js`):
+- `canonicalizeService(name)`: lowercase → trim → collapse whitespace → replace non-alphanum with `-` → strip leading/trailing `-` → drop common suffixes `-api|-svc|-service`. Pure, unit-testable.
+- Examples: `Payments-API` → `payments`, `payment_api` → `payment`, `payments` → `payments`. Plural stays; we don't stem.
 
-Wire it into:
-- `DivergenceSignal` — show "{diverged}/{total} steps diverged" with the first-step detail block kept as the primary callout.
-- `artifact.js` — set `diverged = result.diverged > 0` and embed the counts into `event_sequence` (`{ step, message, suggested, diverged, timestamp }`) and the markdown export ("Divergence: 2/5 steps").
+**Schema migration**:
+- Add `canonical_service text` to `incidents`, `patterns`, `artifacts` (generated column not used — computed in client + backfilled).
+- Backfill: `UPDATE incidents SET canonical_service = lower(regexp_replace(...))` mirroring client logic; same for patterns/artifacts.
+- New unique key on patterns: `(org_id, canonical_service, symptom_fingerprint, first_action)`.
+- Index `incidents(canonical_service, symptom_fingerprint)`, `patterns(canonical_service, symptom_fingerprint)`.
 
-### 8. `src/pages/IncidentReport.jsx` — TTR formatting + nav recovery
-- Issue #4: replace `{artifact.ttr_minutes} minutes` with the existing `formatDuration` logic (compute from minutes: hours+min); fall back to `"<1m"` when null/0.
-- Issue #10: add a second link in the header row — `<Link to="/">All incidents</Link>` next to "Back to incident".
-- Issue #11 surfaces: show `diverged_count / total_with_suggestion` in the meta grid replacing the binary "Divergence detected" badge when richer counts are present in `event_sequence`.
+**Client**:
+- `NewIncident` stamps `canonical_service` on create alongside `service` (kept as displayed name).
+- `SuggestionsBox` pattern lookup uses `canonical_service` filter, not raw `service`.
+- `ResolveControls` writes patterns keyed by `canonical_service`.
+- `Home` displays original `service`; grouping/dedup keys use `canonical_service`.
 
-### 9. `src/lib/app-params.js` — tune staleness window + externalize
-Issue #6: 7 days is too wide. Change default to **4 hours** and read from env:
-```js
-const stalenessMs = Number(importMetaEnv.VITE_STALENESS_THRESHOLD_MS) || 4 * 60 * 60 * 1000;
-export const COLD_START_PARAMS = Object.freeze({ STALENESS_THRESHOLD_MS: stalenessMs });
-```
-Add `VITE_STALENESS_THRESHOLD_MS` to `.env.example` with a comment.
+**Test metric**: create 3 incidents with `Payments-API`, `payments`, `payment_api`; on the 4th matching the same canonical key, patterns from all 3 surface in `SuggestionsBox`.
 
-### 10. `src/pages/IncidentDetail.jsx` — visibility-aware polling with backoff
-Issue #8. Replace the fixed 10s `setInterval` with:
-```js
-useEffect(() => {
-  if (!incident || incident.status !== 'active') return;
-  let delay = 10_000;
-  let timer;
-  const tick = async () => {
-    if (document.visibilityState === 'visible') {
-      await load();
-      delay = 10_000;                 // reset on visible tick
-    } else {
-      delay = Math.min(delay * 2, 5 * 60_000); // cap at 5 min
-    }
-    timer = setTimeout(tick, delay);
-  };
-  timer = setTimeout(tick, delay);
-  const onVis = () => { if (document.visibilityState === 'visible') { clearTimeout(timer); delay = 10_000; tick(); } };
-  document.addEventListener('visibilitychange', onVis);
-  return () => { clearTimeout(timer); document.removeEventListener('visibilitychange', onVis); };
-}, [incident, load]);
-```
+## G6 — Live divergence (mid-incident)
 
-### 11. Error boundary — wire into App root, delete dead `.ts` siblings
-Issue #14. Create `src/components/ErrorBoundary.jsx` (class component) that renders a minimal fallback (mirroring the HTML in `error-page.ts`: "This page didn't load" + Try again / Go home buttons) and logs `componentDidCatch` to console. Wrap `<AuthenticatedApp />` in `src/App.jsx` with `<ErrorBoundary>`.
+Show nudge during active incident when first action diverges, not only after resolution.
 
-Then delete:
-- `src/lib/error-capture.ts` (server-side h3 plumbing — no server)
-- `src/lib/error-page.ts` (replaced by the React boundary fallback)
+**`DivergenceSignal.jsx`**:
+- Accept `mode: 'live' | 'postmortem'`.
+- In `live` mode, compute on every event ≥ 2 with a suggestion present; render a small inline banner: "Your trace has diverged from the suggested path at step N — `<suggested>` vs `<actual>`." Dismissible with `localStorage` per-incident key. Non-blocking.
+- In `postmortem` mode, render existing summary (unchanged).
 
-### 12. Delete vestigial deployment config
-Issue #13. Delete:
-- `wrangler.jsonc` (points at non-existent `src/server.ts`, names a TanStack Start app this project no longer is)
+**`IncidentDetail.jsx`**:
+- When `isActive` and `events.length >= 2`, render `<DivergenceSignal events={events} suggestions={ranked.items} mode="live" />` above the event timeline.
 
-## Out of scope (deliberate scope cuts, per spec's "Defer" list)
-- Calibration / review UI for pattern thresholds (issue #2 minimal-fix's "review UI").
-- Distribution logging of overlap scores.
-- Embeddings / semantic symptom matching.
-- Anti-pattern surfacing in `SuggestionsBox`.
+**Test metric**: active incident with step 1 diverging from rank-1 suggestion shows the live nudge by step 2.
 
-## Technical notes
-- Schema change in (1) is additive + idempotent; safe to re-run `db/schema.sql` against existing DBs.
-- `topSuggestions` prop is backwards-compatible (`AddEventForm` falls back to `topSuggestion` when array is empty), so the change is staged.
-- The 4-hour staleness default can be lengthened per-deploy via env without a code change.
-- The polling change keeps the same 10s baseline for foregrounded tabs; only background tabs back off.
+## G7 — Deferred postmortem (RCA non-blocking at resolve)
 
-## Verification
-1. `bun run build` clean.
-2. Apply updated `db/schema.sql` to Supabase (re-run is safe).
-3. Smoke flow:
-   - new incident → first action logged → confirm `incident_events.suggestions_shown` has 1-3 items.
-   - resolve as failure → re-open same fingerprint → confirm the failed action sinks vs. a fresh success.
-   - load `/incident/:id/report` → "All incidents" link works; TTR shows `1h 23m`, not `83 minutes`; divergence shows `2/5 steps` when applicable.
-   - Hide the tab for 60s → return → poll interval reset to 10s (DevTools network panel).
-   - Force a throw inside `Home` (temp) → ErrorBoundary fallback renders with Try again / Go home.
+**`ResolveControls.jsx`**:
+- Make `root_cause_note` field optional; remove any required validation. Helper text: "You can add this later — we'll prompt you in 24h."
+- On submit with empty RCA, set `incident.rca_status = 'pending'`.
+
+**Schema**:
+- Add `rca_status text check in ('pending','complete') default 'pending'` to `incidents`. Set `complete` when `root_cause_note` is non-empty (trigger).
+- Add `rca_prompt_due timestamptz` defaulting to `resolved_at + interval '24 hours'`.
+
+**Client**:
+- `Home.jsx`: show a "Pending postmortem" chip + "Complete postmortem" button on resolved incidents past `rca_prompt_due` with `rca_status='pending'`.
+- `IncidentDetail.jsx`: allow editing `root_cause_note` post-resolution while `rca_status='pending'` (input field surfaces on resolved view). Saving flips status to `complete`.
+- `artifact.js`: mark RCA as `[Pending]` in markdown until completed; regenerates artifact on RCA save.
+
+**Test metric**: resolving without RCA succeeds; 24h later a "Complete postmortem" prompt appears; filling it updates the artifact and removes the prompt.
+
+## G8 — Richer resolution states
+
+Replace binary `success/failure` with `mitigated | resolved | rolled-back | escalated`.
+
+**Schema migration**:
+- Drop `incidents_outcome_valid` and `artifacts_outcome_valid` CHECK; recreate as `IN ('mitigated','resolved','rolled-back','escalated')`.
+- Backfill: existing `success` → `resolved`, `failure` → `rolled-back`. Document in migration comment.
+- Add column `pattern_outcome text generated always as (case outcome when 'resolved' then 'success' when 'mitigated' then 'success' when 'rolled-back' then 'neutral' when 'escalated' then 'failure' end) stored` for pattern reinforcement mapping.
+
+**Client**:
+- `ResolveControls.jsx`: replace two-button success/failure with four-option select (radio group with descriptions). Default `resolved`.
+- Pattern reinforcement (`ResolveControls`): increment `success_count` only when `pattern_outcome='success'`; increment `failure_count` only when `pattern_outcome='failure'`; `neutral` (rollback) increments neither. This preserves G3's causal-confirmation gate.
+- `Home.jsx` + `IncidentDetail.jsx`: map outcome to color + label (resolved=green, mitigated=teal, rolled-back=amber, escalated=red).
+- `artifact.js`: render new outcome verbatim in markdown.
+
+**Test metric**: resolving as `rolled-back` does NOT auto-stamp pattern failure; resolving as `resolved` increments `success_count`; UI shows distinct chips for each state.
+
+## G9 — Blind Spot Inference
+
+Aggregate ≥3 incidents on a service sharing a root-cause category into a recommendation.
+
+**RCA categorization**:
+- `src/lib/rca.js`: `categorizeRca(text)` → one of `['deploy','config','dependency','capacity','data','unknown']` via keyword match (regex table). Pure function, no LLM (kept in scope).
+- On RCA save (G7 path), compute and persist `rca_category` on `incidents`.
+
+**Schema**:
+- Add `rca_category text` to `incidents`. Index `(canonical_service, rca_category)`.
+- New table `blind_spot_recommendations(id uuid pk, org_id uuid, canonical_service text, rca_category text, incident_count int, predicted_impact_pct numeric, status text check in ('active','dismissed','actioned') default 'active', created_date timestamptz, dismissed_at timestamptz, unique(org_id, canonical_service, rca_category) where status='active')`. RLS via org membership.
+- Edge function or DB trigger `recompute_blind_spots(_service text)` runs after RCA save: counts last-90d incidents per (org, canonical_service, rca_category); if ≥3, upserts active recommendation with `predicted_impact_pct = round(count_in_category / total_in_service * 100, 1)`.
+
+**Client**:
+- New panel on `Home.jsx`: "Blind spots" section listing active recommendations with predicted impact and `Dismiss` / `Mark actioned` buttons (writes status + timestamp).
+- Hide section when none active.
+
+**Test metric**: after 3 incidents on `payments` with `rca_category='deploy'`, a recommendation appears with impact %; clicking dismiss/action updates status and persists.
+
+## Sequencing
+
+1. **Migrations first** — single SQL file applied in order: orgs → canonical_service → outcome states → rca + blind spots. Each block idempotent.
+2. **Lib utilities** — `org.js`, `service.js`, `rca.js`. Unit-testable, no UI.
+3. **Client wiring** — `base44Client` org stamping, then `NewIncident`, `SuggestionsBox`, `ResolveControls`, `IncidentDetail`, `Home`.
+4. **Smoke checklist** at the end matching each gap's test_metric.
+
+## Out of scope (P2/P3 deferred)
+
+INC-{n} slugs, alert URL/severity, post-resolution editing window, evidence URLs, ColdStartRepair relabel, Home filters, LLM normalization, webhook ingest, pattern decay, SSO, exports, deletes, Stripe removal. These remain open and will need follow-up plans.
+
+## Risk notes
+
+- The orgs migration is the largest single change; the personal-org backfill must run before `org_id NOT NULL` and before policy swap, in one transaction.
+- Pattern unique key changes from `(owner_id, ...)` to `(org_id, canonical_service, symptom_fingerprint, first_action)` will collapse duplicate rows where teammates trained the same pattern; migration must `DELETE` lower-count duplicates or `SUM` counts before reindex. Plan: `SUM` into the surviving row by (org, canonical_service, fingerprint, first_action).
+- `pattern_outcome` as a generated stored column requires recreating the column if outcome values change; migration will guard with `DROP COLUMN IF EXISTS` first.
