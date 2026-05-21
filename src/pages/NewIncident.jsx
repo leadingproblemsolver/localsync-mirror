@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { base44 } from '@/api/base44Client';
 import { fingerprintSymptom } from '@/lib/fingerprint';
-import { FEATURE_FLAGS } from '@/lib/feature-flags';
+import { canonicalizeService } from '@/lib/service';
 import { ArrowLeft, Loader2 } from 'lucide-react';
 
 export default function NewIncident() {
@@ -24,19 +24,18 @@ export default function NewIncident() {
     }
 
     setSubmitting(true);
+    // G2: stamp canonical_service alongside the display name so the pattern
+    // engine collapses `Payments-API`, `payments`, and `payment_api`.
     const payload = {
       service: service.trim(),
+      canonical_service: canonicalizeService(service),
       symptom: symptom.trim(),
       status: 'active',
       symptom_fingerprint: fingerprintSymptom(symptom),
       is_test: isTest,
       step_count: 0,
     };
-    // P2 USER_ISOLATION groundwork — guarded by feature flag until the
-    // owner_id column + RLS policies are applied to the database.
-    if (FEATURE_FLAGS.P2_USER_ISOLATION) {
-      payload.owner_id = await base44.auth.currentUserId();
-    }
+    // org_id is auto-stamped by base44Client.entities.Incident.create
     const incident = await base44.entities.Incident.create(payload);
     navigate(`/incident/${incident.id}`);
   }
@@ -75,6 +74,11 @@ export default function NewIncident() {
             }`}
             autoFocus
           />
+          {service && (
+            <p className="font-mono text-xs text-muted-foreground/60 mt-1">
+              Canonical bucket: <span className="text-foreground/80">{canonicalizeService(service) || '—'}</span>
+            </p>
+          )}
           {errors.service && (
             <p className="font-mono text-xs text-destructive mt-1">{errors.service}</p>
           )}
@@ -109,8 +113,6 @@ export default function NewIncident() {
             Test incident (won't train patterns).
           </span>
         </label>
-
-
 
         <button
           type="submit"
