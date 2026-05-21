@@ -1,0 +1,249 @@
+{
+  "combined_name": "elite_solo_systems_operating_pair",
+  "shared_goal": "Convert technical ideas into the smallest solo-shippable, behavior-changing system and then falsify the design for real-world feasibility before implementation.",
+  "target_idea": {
+    "name": "TraceCrumb",
+    "one_line": "A decision-memory system for production incidents that captures and reinforces successful first-response diagnostic behavior under operational uncertainty.",
+    "root_equation": "high_uncertainty + multiple_plausible_branches + weak_historical_decision_memory = slow_convergence",
+    "attack_vector": "Attacks the third variable (weak historical decision memory) to compress the fourth (slow convergence).",
+    "territory": "The window between alert firing and first diagnostic branch selection.",
+    "core_primitive": "First Diagnostic Intention — the moment an engineer states where they think the problem is before any branch is explored.",
+    "categorical_domain": "Operational Cognition Infrastructure",
+    "explicit_non_competition": [
+      "Observability platforms (Datadog, Grafana, Honeycomb)",
+      "Incident management suites (PagerDuty, Incident.io, FireHydrant)",
+      "AI debugging agents (autonomous copilots)",
+      "Root-cause engines (post-incident RCA)",
+      "Autonomous remediation systems",
+      "Dashboard products"
+    ]
+  },
+  "part_1": {
+    "name": "elite_solo_lean_systems_implementation_engine",
+    "purpose": "Compress a technical idea into the smallest deployable loop that can be shipped in under 48 hours on free tier.",
+    "applied_to": "TraceCrumb",
+    "output_sections": {
+      "minimal_system_definition": {
+        "description": "A Slack bot that captures a single diagnostic intention at incident start, retrieves the three most similar past incidents by keyword/service match, and writes one structured artifact to Postgres when the incident closes.",
+        "behavior_change_produced": "An engineer on call at 2 AM types one command and receives historically grounded first-check suggestions before exploring any branch. That is the observable behavior change. Everything else is future scope.",
+        "kill_criteria": "If fewer than 3 incidents are logged in the first two weeks by real on-call engineers, the retrieval loop has no signal and the system is dead."
+      },
+      "data_model": {
+        "incidents": {
+          "id": "uuid",
+          "service_name": "text",
+          "symptom_text": "text",
+          "started_at": "timestamp",
+          "closed_at": "timestamp",
+          "resolved": "boolean"
+        },
+        "intentions": {
+          "id": "uuid",
+          "incident_id": "uuid (fk)",
+          "engineer_id": "text",
+          "intention_text": "text",
+          "recorded_at": "timestamp"
+        },
+        "actions": {
+          "id": "uuid",
+          "incident_id": "uuid (fk)",
+          "action_text": "text",
+          "outcome": "enum: useful | dead_end | root_cause",
+          "logged_at": "timestamp"
+        },
+        "artifacts": {
+          "id": "uuid",
+          "incident_id": "uuid (fk)",
+          "intention_vs_outcome_delta": "text",
+          "successful_first_actions": "jsonb",
+          "dead_ends": "jsonb",
+          "created_at": "timestamp"
+        },
+        "pattern_weights": {
+          "id": "uuid",
+          "service_name": "text",
+          "symptom_fingerprint": "text",
+          "action_text": "text",
+          "confidence_score": "float",
+          "updated_at": "timestamp"
+        }
+      },
+      "api_surface": {
+        "slack_commands": [
+          "/tc start <service> <symptom> — opens incident, triggers intention prompt",
+          "/tc action <text> — logs one action to the event stream",
+          "/tc close — closes incident, generates artifact, updates pattern weights"
+        ],
+        "internal_endpoints": [
+          "POST /incident — create incident record",
+          "POST /intention — record first diagnostic intention",
+          "GET /retrieve?service=&symptom= — fetch top-3 similar past incidents",
+          "POST /action — log one action with outcome",
+          "POST /artifact — generate and persist closing artifact",
+          "POST /reinforce — update pattern confidence weights on close"
+        ],
+        "constraint": "No public API in v1. Slack is the only surface. Web UI is explicitly deferred."
+      },
+      "execution_flow": [
+        "Engineer runs /tc start payments-api latency spike",
+        "Bot writes incident row to Postgres, prompts: What is the first thing you think we should check?",
+        "Engineer responds. Intention written to intentions table.",
+        "GET /retrieve runs deterministic keyword + service match against past incidents. Top 3 returned to Slack.",
+        "During incident, engineer runs /tc action checked Redis memory — outcome recorded.",
+        "Engineer runs /tc close. Artifact generated: intention vs. outcome delta, successful paths, dead ends.",
+        "Pattern weights updated: successful first actions gain score, dead ends decay.",
+        "Next similar incident retrieves improved suggestions. Loop compounds."
+      ],
+      "failure_modes": [
+        {
+          "mode": "No historical data at cold start",
+          "fix": "Retrieval returns empty with explicit message: No prior incidents matched. Your actions will seed future retrieval. Cold start is valid state, not a bug."
+        },
+        {
+          "mode": "Engineers skip /tc action logging during high-stress incidents",
+          "fix": "Make /tc close the only mandatory step. Artifact is generated from intention + resolution alone if action log is empty. Logging is opt-in, not a gate."
+        },
+        {
+          "mode": "Symptom text too freeform to match reliably",
+          "fix": "V1 uses service_name + top-3 keyword overlap only. Embeddings are explicitly deferred. Deterministic scoring ships first."
+        },
+        {
+          "mode": "Pattern weights drift toward survivor bias (only closed incidents reinforce)",
+          "fix": "Accepted in v1. Flag in artifact metadata. Correction is a v2 problem."
+        }
+      ],
+      "first_build_order": [
+        "1. Supabase project — incidents, intentions, actions, artifacts, pattern_weights tables created.",
+        "2. Slack bot registered. /tc start handler written. Incident row inserted on trigger.",
+        "3. Intention prompt sent to Slack thread. Response written to intentions table.",
+        "4. GET /retrieve — deterministic service + keyword match against closed incidents. Returns top 3.",
+        "5. /tc action handler — appends action rows to incident. Outcome field optional at log time.",
+        "6. /tc close handler — artifact generated from incident record + intentions + actions. Written to artifacts table.",
+        "7. Pattern reinforcement — on close, confidence scores updated for actions marked useful or root_cause.",
+        "8. Deploy to Railway or Render free tier. Slack bot live. First real incident logged."
+      ]
+    },
+    "core_rules": [
+      "smallest valid loop first",
+      "maximize platform leverage",
+      "behavior over structure",
+      "no premature intelligence",
+      "explicit kill criteria",
+      "compress until it hurts"
+    ]
+  },
+  "part_2": {
+    "name": "elite_solo_reality_first_feasibility_checker",
+    "purpose": "Destroy weak assumptions and reject designs that cannot be shipped by one solo developer in under 48 hours.",
+    "applied_to": "TraceCrumb",
+    "output_sections": {
+      "issue_by_issue_diagnosis": [
+        {
+          "issue": "LLM layer described in technical direction",
+          "severity": "scope leak",
+          "diagnosis": "Symptom normalization and retrieval explanation via LLM adds an async call, prompt engineering, latency, and potential hallucination surface to every incident start. This is not the smallest loop.",
+          "minimal_fix": "Remove LLM entirely from v1. Deterministic keyword matching on service_name + symptom_text is sufficient for retrieval. Artifact summarization is structured template output, not LLM generation. LLM is explicitly deferred to v2."
+        },
+        {
+          "issue": "Pattern reinforcement engine",
+          "severity": "premature intelligence",
+          "diagnosis": "Confidence weight decay and compounding reinforcement is statistically meaningful only after 20–50+ incidents. In 48 hours, zero real incidents will have been logged. The engine has no data to operate on.",
+          "minimal_fix": "Write the schema and the weight update function. Do not build a scoring UI or decay algorithm. A simple increment/decrement on useful vs dead_end outcomes is sufficient. Display the raw count in retrieval output. Call it done."
+        },
+        {
+          "issue": "Six audience segments defined in product document",
+          "severity": "false progress",
+          "diagnosis": "Compliance buyers, engineering managers, and enterprise audit trails are not the users who will run /tc start at 2 AM. Building for six personas simultaneously produces a system optimized for none of them.",
+          "minimal_fix": "V1 ships for exactly one persona: the on-call engineer. Every design decision routes through that user and no other. All other segments are noted and deferred."
+        },
+        {
+          "issue": "Minimal web UI listed as secondary interface",
+          "severity": "solo tax",
+          "diagnosis": "Any web UI — however minimal — requires auth, routing, state management, and deployment configuration. For a solo developer in 48 hours, this is not secondary. It is a second product.",
+          "minimal_fix": "Remove web UI from v1 scope entirely. Slack is the only interface. All output is Slack messages. Web UI ships when retrieval is proven valuable."
+        },
+        {
+          "issue": "Embeddings listed as retrieval path",
+          "severity": "scope leak",
+          "diagnosis": "Vector embeddings require an embedding model call per incident, a vector store or pgvector setup, similarity threshold tuning, and evaluation. None of this is necessary to prove the retrieval behavior works.",
+          "minimal_fix": "Deterministic scoring only: service_name exact match weighted highest, keyword overlap on symptom_text as secondary signal. Ship this. Embeddings are v2 after deterministic retrieval is validated."
+        }
+      ],
+      "final_classification": {
+        "verdict": "CONDITIONALLY SHIPPABLE",
+        "conditions": [
+          "LLM layer removed from v1 entirely.",
+          "Web UI removed from v1 entirely.",
+          "Embeddings deferred. Deterministic retrieval only.",
+          "Pattern reinforcement implemented as simple increment/decrement with no decay algorithm.",
+          "All design decisions scoped to on-call engineer persona only.",
+          "Kill criteria defined and accepted before build begins."
+        ],
+        "assessment": "The core loop — intention capture, deterministic retrieval, action logging, artifact generation — is a Slack bot with five database tables and eight endpoints. That is a 48-hour build. The product document describes a correct and focused problem. The implementation risk is entirely in scope creep from adjacent features that are well-defined but not required for the first working loop."
+      }
+    },
+    "core_rules": [
+      "default to rejection",
+      "test implementation truth",
+      "detect scope leaks",
+      "detect false progress",
+      "detect solo tax",
+      "detect behavior vacuum"
+    ]
+  },
+  "paired_workflow": [
+    {
+      "step": 1,
+      "name": "design_compiler",
+      "action": "Transform the raw idea into the leanest end-to-end system.",
+      "output": "Slack bot with five tables, eight endpoints, and a deterministic retrieval loop. No LLM. No web UI. No embeddings. Intention capture → retrieval → action log → artifact → pattern weight update."
+    },
+    {
+      "step": 2,
+      "name": "reality_filter",
+      "action": "Falsify the design against solo, free-tier, 48-hour constraints.",
+      "output": "Five issues identified. LLM layer, web UI, embeddings, six-persona scope, and premature reinforcement engine all cut or compressed. System reclassified as conditionally shippable."
+    },
+    {
+      "step": 3,
+      "name": "compression_loop",
+      "action": "If it fails, compress scope until it becomes shippable.",
+      "output": "Post-compression scope: /tc start, /tc action, /tc close. Deterministic retrieval. Artifact written to Postgres. Pattern weights as a simple counter. Slack only. One persona. This ships."
+    },
+    {
+      "step": 4,
+      "name": "build_order",
+      "action": "Produce the fastest implementation checklist for the first working loop.",
+      "output": [
+        "Hour 0–2: Supabase project. Five tables. Schema locked.",
+        "Hour 2–6: FastAPI service. POST /incident, POST /intention, POST /action, POST /artifact, POST /reinforce.",
+        "Hour 6–10: GET /retrieve. Deterministic service + keyword scoring. Returns top 3 past incidents.",
+        "Hour 10–16: Slack bot. /tc start handler. Intention prompt. Retrieval injected into thread.",
+        "Hour 16–22: /tc action handler. /tc close handler. Artifact generation from template. Pattern weight update.",
+        "Hour 22–30: Deploy to Railway free tier. Internal smoke test with synthetic incidents.",
+        "Hour 30–48: First real incident logged. Artifact reviewed. Kill criteria evaluated."
+      ]
+    }
+  ],
+  "shared_constraints": {
+    "time_limit_hours": 48,
+    "team_size": 1,
+    "budget": "free tier",
+    "required_signal": "An on-call engineer receives historically grounded first-check suggestions before exploring any diagnostic branch. That is the observable behavior change.",
+    "preferred_stack": [
+      "Supabase (Postgres + free tier hosting)",
+      "Slack (primary and only interface)",
+      "FastAPI (lightweight async Python)",
+      "Railway or Render (free tier deployment)",
+      "TypeScript or Python"
+    ]
+  },
+  "shared_failure_signals": [
+    "LLM added to v1 retrieval path — scope leak, remove it",
+    "Web UI scoped into v1 — solo tax, defer it",
+    "Embeddings scoped into v1 — premature intelligence, defer it",
+    "More than one user persona driving v1 design decisions — false progress, cut to on-call engineer only",
+    "Decay algorithm built before 20+ real incidents exist — behavior vacuum, no data to decay",
+    "Cannot demonstrate retrieval output to a real engineer in 48 hours — ship criterion failed"
+  ]
+}
