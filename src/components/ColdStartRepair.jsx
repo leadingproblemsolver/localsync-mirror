@@ -21,7 +21,7 @@ export default function ColdStartRepair({ incident, onRepaired }) {
   const navigate = useNavigate();
   const [busy, setBusy] = useState(null); // 'refp' | 'resug' | 'force'
   const [confirmForce, setConfirmForce] = useState(false);
-  const [forceOutcome, setForceOutcome] = useState('failure');
+  const [forceOutcome, setForceOutcome] = useState('rolled-back');
 
   if (!FEATURE_FLAGS.P3_COLD_START_REPAIR) return null;
   if (!incident || incident.status !== 'active') return null;
@@ -139,8 +139,10 @@ export default function ColdStartRepair({ incident, onRepaired }) {
               disabled={busy === 'force'}
               className="bg-card border border-border px-2 py-1 font-mono text-xs text-foreground focus:outline-none focus:border-primary"
             >
-              <option value="failure">failure</option>
-              <option value="success">success</option>
+              <option value="rolled-back">rolled-back</option>
+              <option value="mitigated">mitigated</option>
+              <option value="resolved">resolved</option>
+              <option value="escalated">escalated</option>
             </select>
             <button
               onClick={doForceResolve}

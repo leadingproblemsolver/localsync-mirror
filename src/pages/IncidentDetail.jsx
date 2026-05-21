@@ -4,13 +4,26 @@ import { base44 } from '@/api/base44Client';
 import { getSuggestions } from '@/lib/suggestions';
 import { timeAgo, formatDuration } from '@/lib/suggestions';
 import { fingerprintSymptom } from '@/lib/fingerprint';
+import { canonicalizeService } from '@/lib/service';
 import { ArrowLeft, Circle } from 'lucide-react';
 import SuggestionsBox from '@/components/SuggestionsBox';
 import EventTimeline from '@/components/EventTimeline';
 import AddEventForm from '@/components/AddEventForm';
 import ResolveControls from '@/components/ResolveControls';
 import DivergenceSignal from '@/components/DivergenceSignal';
+import PendingPostmortem from '@/components/PendingPostmortem';
 import ColdStartRepair from '@/components/ColdStartRepair';
+
+// G8: outcome -> visual tone
+const OUTCOME_TONE = {
+  resolved:     { dot: 'text-green-500',  pill: 'bg-green-500/10 text-green-500',  border: 'border-green-500/30 bg-green-500/5 text-green-500' },
+  mitigated:    { dot: 'text-teal-400',   pill: 'bg-teal-400/10 text-teal-400',    border: 'border-teal-400/30 bg-teal-400/5 text-teal-400' },
+  'rolled-back':{ dot: 'text-amber-400',  pill: 'bg-amber-400/10 text-amber-400',  border: 'border-amber-400/30 bg-amber-400/5 text-amber-400' },
+  escalated:    { dot: 'text-red-500',    pill: 'bg-red-500/10 text-red-500',      border: 'border-red-500/30 bg-red-500/5 text-red-500' },
+  // legacy
+  success:      { dot: 'text-green-500',  pill: 'bg-green-500/10 text-green-500',  border: 'border-green-500/30 bg-green-500/5 text-green-500' },
+  failure:      { dot: 'text-red-500',    pill: 'bg-red-500/10 text-red-500',      border: 'border-red-500/30 bg-red-500/5 text-red-500' },
+};
 
 export default function IncidentDetail() {
   const { id } = useParams();
@@ -23,33 +36,28 @@ export default function IncidentDetail() {
   const [preFillValue, setPreFillValue] = useState(null);
   const [ranked, setRanked] = useState({ source: 'heuristic', items: [] });
 
-
   const load = useCallback(async () => {
     const incRows = await base44.entities.Incident.filter({ id });
-
     if (!incRows || incRows.length === 0) {
       setNotFound(true);
       setLoading(false);
       return;
     }
-
     const inc = incRows[0];
+    // G2: pattern lookup by canonical_service
+    const canon = inc.canonical_service || canonicalizeService(inc.service);
     const [evts, pats] = await Promise.all([
       base44.entities.IncidentEvent.filter({ incident_id: id }),
-      base44.entities.Pattern.filter({ service: inc.service }, { limit: 100 }),
+      base44.entities.Pattern.filter({ canonical_service: canon }, { limit: 100 }),
     ]);
-
     setIncident(inc);
     setEvents(evts.sort((a, b) => a.step_order - b.step_order));
     setPatterns(pats);
     setLoading(false);
   }, [id]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  useEffect(() => { load(); }, [load]);
 
-  // Gap #8: visibility-aware polling with exponential backoff while hidden.
   useEffect(() => {
     if (!incident || incident.status !== 'active') return;
     let delay = 10_000;
@@ -78,7 +86,6 @@ export default function IncidentDetail() {
     };
   }, [incident, load]);
 
-
   if (loading) {
     return (
       <div className="space-y-4">
@@ -105,10 +112,10 @@ export default function IncidentDetail() {
   const firstEvent = sortedEvents[0];
   const topSuggestion = getSuggestions(incident.symptom)[0];
   const symptomFingerprint = incident.symptom_fingerprint || fingerprintSymptom(incident.symptom);
+  const tone = OUTCOME_TONE[incident.outcome] || OUTCOME_TONE.resolved;
 
   return (
     <div>
-      {/* Back */}
       <Link
         to="/"
         className="flex items-center gap-2 font-mono text-xs text-muted-foreground hover:text-foreground transition-colors mb-8 uppercase tracking-wider"
@@ -117,24 +124,21 @@ export default function IncidentDetail() {
         All Incidents
       </Link>
 
-      {/* Section 1: Incident Header */}
       <div className="border border-border bg-card p-5 mb-6">
         <div className="flex items-start justify-between gap-4 mb-4">
           <div className="flex items-center gap-3">
             <Circle
               className={`w-2 h-2 fill-current flex-shrink-0 mt-0.5 ${
-                isActive ? 'text-amber-400' : 'text-green-500'
+                isActive ? 'text-amber-400' : tone.dot
               }`}
             />
             <h1 className="font-mono text-lg font-medium text-foreground">
               {incident.service}
             </h1>
             <span className={`font-mono text-xs px-2 py-0.5 ${
-              isActive
-                ? 'bg-amber-400/10 text-amber-400'
-                : 'bg-green-500/10 text-green-500'
+              isActive ? 'bg-amber-400/10 text-amber-400' : tone.pill
             }`}>
-              {incident.status}
+              {isActive ? incident.status : incident.outcome}
             </span>
           </div>
           <div className="text-right text-xs font-mono text-muted-foreground">
@@ -152,11 +156,7 @@ export default function IncidentDetail() {
         </p>
 
         {!isActive && (
-          <div className={`flex items-center gap-2 px-3 py-2 border text-xs font-mono ${
-            incident.outcome === 'success'
-              ? 'border-green-500/30 bg-green-500/5 text-green-500'
-              : 'border-red-500/30 bg-red-500/5 text-red-500'
-          }`}>
+          <div className={`flex items-center gap-2 px-3 py-2 border text-xs font-mono ${tone.border}`}>
             Resolved as <span className="font-medium uppercase ml-1">{incident.outcome}</span>
             {incident.resolved_at && (
               <span className="text-muted-foreground ml-auto">
@@ -166,14 +166,21 @@ export default function IncidentDetail() {
           </div>
         )}
 
-        {/* Divergence — only on resolved */}
+        {/* G7: post-resolution pending-postmortem editor */}
+        {!isActive && incident.rca_status === 'pending' && (
+          <PendingPostmortem incident={incident} onUpdated={load} />
+        )}
+
         {!isActive && <DivergenceSignal events={events} />}
 
-        {/* P3 — Cold-start repair (active + stale only) */}
         {isActive && <ColdStartRepair incident={incident} onRepaired={load} />}
       </div>
 
-      {/* Section 2: Suggestions */}
+      {/* G6: live divergence nudge while still active */}
+      {isActive && events.length >= 2 && (
+        <DivergenceSignal events={events} mode="live" incidentId={id} />
+      )}
+
       <SuggestionsBox
         symptom={incident.symptom}
         service={incident.service}
@@ -184,8 +191,6 @@ export default function IncidentDetail() {
         hasEvents={events.length > 0}
       />
 
-
-      {/* Section 3: Event Timeline */}
       <div className="mb-6">
         <div className="flex items-center justify-between mb-3">
           <span className="font-mono text-xs text-muted-foreground uppercase tracking-wider">
@@ -198,7 +203,6 @@ export default function IncidentDetail() {
         <EventTimeline events={events} />
       </div>
 
-      {/* Section 4 & 5: Active incident controls */}
       {isActive && (
         <>
           <div className="border-t border-border pt-6 mb-6">
@@ -216,7 +220,6 @@ export default function IncidentDetail() {
               initialStepOrder={events.length + 1}
               currentStepCount={incident.step_count ?? sortedEvents.length}
             />
-
           </div>
 
           <div className="border-t border-border pt-6">

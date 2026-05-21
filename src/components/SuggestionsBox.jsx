@@ -1,9 +1,10 @@
 import { useEffect, useMemo } from 'react';
 import { getSuggestions } from '@/lib/suggestions';
 import { overlapScore } from '@/lib/fingerprint';
+import { canonicalizeService } from '@/lib/service';
 import { Lightbulb } from 'lucide-react';
 
-// Gap #7: Laplace-smoothed success rate so high-failure patterns sink.
+// Laplace-smoothed success rate so high-failure patterns sink.
 const successRate = p =>
   ((p.success_count || 0) + 1) /
   ((p.success_count || 0) + (p.failure_count || 0) + 2);
@@ -18,7 +19,12 @@ export default function SuggestionsBox({
   hasEvents,
 }) {
   const { items, source, serviceHasPatterns } = useMemo(() => {
-    const forService = patterns.filter(p => p.service === service);
+    // G2: match on canonical_service so `Payments-API` ≡ `payments` ≡ `payment_api`.
+    const canon = canonicalizeService(service);
+    const forService = patterns.filter(p => {
+      const pc = p.canonical_service || canonicalizeService(p.service);
+      return pc === canon;
+    });
     const scored = forService
       .map(p => ({ p, overlap: overlapScore(symptomFingerprint, p.symptom_fingerprint || '') }))
       .filter(x => x.overlap >= 0.2)
@@ -41,7 +47,6 @@ export default function SuggestionsBox({
     };
   }, [symptom, service, symptomFingerprint, patterns]);
 
-  // Gap #3: lift the ranked list to parent so AddEventForm can persist top-3.
   const itemsKey = items.join('\u0001');
   useEffect(() => {
     onRankedChange?.({ source, items });
@@ -57,7 +62,6 @@ export default function SuggestionsBox({
         </span>
       </div>
 
-      {/* Gap #9: explicit empty-state for new/unknown services. */}
       {source === 'heuristic' && !serviceHasPatterns && (
         <div className="mb-3 font-mono text-xs text-muted-foreground/70 border-l-2 border-amber-400/30 pl-2">
           No history for <span className="text-foreground">{service}</span> yet — falling back to heuristics.

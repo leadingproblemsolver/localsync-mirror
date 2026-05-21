@@ -1,7 +1,6 @@
 import { base44 } from '@/api/base44Client';
 import { computeDivergence } from '@/lib/divergence';
 
-
 /**
  * Generates and persists an artifact for a resolved incident.
  */
@@ -18,7 +17,6 @@ export async function generateAndPersistArtifact(incidentId) {
     const sortedEvents = events.sort((a, b) => a.step_order - b.step_order);
     const firstEvent = sortedEvents[0];
 
-    // Gap #11: divergence across the full sequence, not only step 1.
     const div = computeDivergence(sortedEvents);
     const diverged = div.diverged > 0;
     const suggested = firstEvent?.suggested_action || null;
@@ -42,6 +40,10 @@ export async function generateAndPersistArtifact(incidentId) {
       };
     });
 
+    // G7: render `[Pending]` when the RCA hasn't been filled in yet so the
+    // artifact reflects state-of-the-world honestly.
+    const rcaPending = !incident.root_cause_note || !incident.root_cause_note.trim();
+    const rcaText = rcaPending ? '_[Pending — to be added within 24h]_' : incident.root_cause_note;
 
     const markdown = generateMarkdownExport({
       service: incident.service,
@@ -58,15 +60,15 @@ export async function generateAndPersistArtifact(incidentId) {
       actualFirstAction: actual,
       suggestedAction: suggested,
       eventSequence,
-      rootCauseNote: incident.root_cause_note || 'Not captured',
+      rootCauseNote: rcaText,
     });
-
 
     const existingArtifacts = await base44.entities.Artifact.filter({ incident_id: incidentId });
 
     const artifactData = {
       incident_id: incidentId,
       service: incident.service,
+      canonical_service: incident.canonical_service,
       symptom: incident.symptom,
       first_intention: firstEvent?.message || null,
       suggestion_shown: firstEvent?.suggested_action || null,
@@ -103,12 +105,11 @@ function generateMarkdownExport(data) {
     .map(e => `**[${e.step}]** ${e.message}${e.diverged ? '  _(diverged)_' : ''}  \`${e.timestamp}\``)
     .join('\n');
 
-
   return `# TraceCrumb Incident Report
 
 **Service:** ${data.service}
 **Symptom:** ${data.symptom}
-**Outcome:** ${data.outcome.toUpperCase()} | **TTR:** ${data.ttrMinutes} min
+**Outcome:** ${String(data.outcome || '').toUpperCase()} | **TTR:** ${data.ttrMinutes} min
 **Opened:** ${data.createdAt} | **Closed:** ${data.resolvedAt}
 
 ## First Intention

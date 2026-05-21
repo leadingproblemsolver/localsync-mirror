@@ -4,7 +4,26 @@ import { base44 } from '@/api/base44Client';
 import { timeAgo, formatDuration } from '@/lib/suggestions';
 import { FEATURE_FLAGS } from '@/lib/feature-flags';
 import { isStale, staleAgeMs, formatStaleAge } from '@/lib/staleness';
-import { Plus, Circle, AlertTriangle } from 'lucide-react';
+import BlindSpots from '@/components/BlindSpots';
+import { Plus, Circle, AlertTriangle, FileWarning } from 'lucide-react';
+
+// G8: visual tone per outcome
+const OUTCOME_DOT = {
+  resolved: 'text-green-500',
+  mitigated: 'text-teal-400',
+  'rolled-back': 'text-amber-400',
+  escalated: 'text-red-500',
+  success: 'text-green-500',
+  failure: 'text-red-500',
+};
+const OUTCOME_PILL = {
+  resolved: 'bg-green-500/10 text-green-500',
+  mitigated: 'bg-teal-400/10 text-teal-400',
+  'rolled-back': 'bg-amber-400/10 text-amber-400',
+  escalated: 'bg-red-500/10 text-red-500',
+  success: 'bg-green-500/10 text-green-500',
+  failure: 'bg-red-500/10 text-red-500',
+};
 
 export default function Home() {
   const [incidents, setIncidents] = useState([]);
@@ -12,9 +31,7 @@ export default function Home() {
   const [staleOnly, setStaleOnly] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    loadData();
-  }, []);
+  useEffect(() => { loadData(); }, []);
 
   async function loadData() {
     setLoading(true);
@@ -43,14 +60,23 @@ export default function Home() {
     filter === 'active' ? sorted.filter(i => i.status === 'active') : sorted;
   const filtered = p3 && staleOnly ? baseFiltered.filter(i => isStale(i)) : baseFiltered;
 
-  // Reset stale-only when no stale incidents remain or flag off.
   useEffect(() => {
     if (!p3 || staleCount === 0) setStaleOnly(false);
   }, [p3, staleCount]);
 
+  // G7: resolved incidents with pending postmortem past their prompt-due
+  const pendingPostmortems = useMemo(
+    () => sorted.filter(i =>
+      i.status === 'resolved' &&
+      i.rca_status === 'pending' &&
+      i.rca_prompt_due &&
+      new Date(i.rca_prompt_due).getTime() <= Date.now()
+    ),
+    [sorted],
+  );
+
   return (
     <div>
-      {/* Header */}
       <div className="flex items-start justify-between mb-8">
         <div>
           <h1 className="font-mono text-xl font-medium tracking-tight text-foreground">
@@ -69,7 +95,35 @@ export default function Home() {
         </Link>
       </div>
 
-      {/* Filter */}
+      {/* G9 */}
+      <BlindSpots />
+
+      {/* G7: pending postmortem prompts */}
+      {pendingPostmortems.length > 0 && (
+        <div className="border border-amber-400/30 bg-amber-400/5 p-4 mb-6">
+          <div className="flex items-center gap-2 mb-2">
+            <FileWarning className="w-3.5 h-3.5 text-amber-400" />
+            <span className="font-mono text-xs text-amber-400 uppercase tracking-wider">
+              Pending postmortems
+            </span>
+            <span className="font-mono text-xs text-muted-foreground">
+              {pendingPostmortems.length}
+            </span>
+          </div>
+          <div className="space-y-1">
+            {pendingPostmortems.slice(0, 5).map(i => (
+              <Link
+                key={i.id}
+                to={`/incident/${i.id}`}
+                className="block font-mono text-xs text-foreground/80 hover:text-foreground"
+              >
+                <span className="text-amber-400">→</span> {i.service} — {i.symptom}
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center gap-1 mb-6 border-b border-border pb-4">
         {['active', 'all'].map(f => (
           <button
@@ -100,7 +154,6 @@ export default function Home() {
         )}
       </div>
 
-      {/* List */}
       {loading ? (
         <div className="space-y-3">
           {[1, 2, 3].map(i => (
@@ -123,6 +176,11 @@ export default function Home() {
             const count = incident.step_count ?? 0;
             const isActive = incident.status === 'active';
             const stale = p3 && isStale(incident);
+            const dot = isActive ? 'text-amber-400' : (OUTCOME_DOT[incident.outcome] || 'text-green-500');
+            const pill = isActive
+              ? 'bg-amber-400/10 text-amber-400'
+              : (OUTCOME_PILL[incident.outcome] || 'bg-green-500/10 text-green-500');
+            const pendingRca = !isActive && incident.rca_status === 'pending';
             return (
               <Link
                 key={incident.id}
@@ -132,24 +190,21 @@ export default function Home() {
                 <div className="flex items-start justify-between gap-4">
                   <div className="flex items-start gap-3 flex-1 min-w-0">
                     <div className="mt-1.5 flex-shrink-0">
-                      <Circle
-                        className={`w-2 h-2 fill-current ${
-                          isActive ? 'text-amber-400' : 'text-green-500'
-                        }`}
-                      />
+                      <Circle className={`w-2 h-2 fill-current ${dot}`} />
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-3 mb-1 flex-wrap">
                         <span className="font-mono text-sm font-medium text-foreground group-hover:text-primary transition-colors">
                           {incident.service}
                         </span>
-                        <span className={`font-mono text-xs px-1.5 py-0.5 ${
-                          isActive
-                            ? 'bg-amber-400/10 text-amber-400'
-                            : 'bg-green-500/10 text-green-500'
-                        }`}>
-                          {incident.status}
+                        <span className={`font-mono text-xs px-1.5 py-0.5 ${pill}`}>
+                          {isActive ? incident.status : incident.outcome}
                         </span>
+                        {pendingRca && (
+                          <span className="font-mono text-xs px-1.5 py-0.5 bg-amber-400/10 text-amber-400 border border-amber-400/30 uppercase tracking-wider">
+                            postmortem pending
+                          </span>
+                        )}
                         {stale && (
                           <span className="font-mono text-xs px-1.5 py-0.5 bg-amber-400/10 text-amber-400 border border-amber-400/30 uppercase tracking-wider">
                             stale {formatStaleAge(staleAgeMs(incident))}

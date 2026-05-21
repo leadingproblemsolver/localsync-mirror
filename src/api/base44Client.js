@@ -16,13 +16,33 @@ const supabase = createClient(supabaseUrl, supabaseAnonKey, {
 const toSnakeCase = (entityName) =>
   entityName.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
 
-// T-11 audit: every read/write below goes through the supabase-js anon
-// client carrying the signed-in user's JWT. There is no service-role
-// (admin) bypass anywhere in the client bundle, so once P2 RLS policies
-// are applied, list/filter results are server-side scoped to the
-// current user automatically — no extra owner_id filter required here.
+// Tables whose rows are org-scoped — the client auto-stamps org_id on
+// create (G1). RLS still enforces this server-side; this is just so
+// the value is present without each call-site needing to remember.
+const ORG_STAMPED = new Set([
+  'incident',
+  'pattern',
+  'artifact',
+  'blind_spot_recommendation',
+]);
+
+// Lazy import to avoid a cycle with @/lib/org which imports this module.
+let _orgGetter = null;
+async function getOrgIdSafe() {
+  if (!_orgGetter) {
+    _orgGetter = (await import('@/lib/org')).getCurrentOrgId;
+  }
+  try {
+    return await _orgGetter();
+  } catch (e) {
+    console.error('getOrgIdSafe failed', e);
+    return null;
+  }
+}
+
 const createEntityClient = (entityName) => {
   const table = toSnakeCase(entityName);
+  const isOrgStamped = ORG_STAMPED.has(entityName.toLowerCase());
 
   return {
     list: async (orderBy, limit) => {
@@ -61,7 +81,12 @@ const createEntityClient = (entityName) => {
       return data || [];
     },
     create: async (payload) => {
-      const { data, error } = await supabase.from(table).insert([payload]).select();
+      let row = payload;
+      if (isOrgStamped && row && row.org_id == null) {
+        const orgId = await getOrgIdSafe();
+        if (orgId) row = { ...row, org_id: orgId };
+      }
+      const { data, error } = await supabase.from(table).insert([row]).select();
       if (error) throw error;
       return data?.[0] ?? null;
     },
@@ -143,19 +168,7 @@ export const base44 = {
     IncidentEvent: createEntityClient('IncidentEvent'),
     Pattern: createEntityClient('Pattern'),
     Artifact: createEntityClient('Artifact'),
+    BlindSpotRecommendation: createEntityClient('BlindSpotRecommendation'),
   },
   supabase,
 };
-
-
-
-
-
-
-
-
-
-
-
-
-

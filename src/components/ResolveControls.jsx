@@ -4,75 +4,88 @@ import { toast } from 'sonner';
 import { base44 } from '@/api/base44Client';
 import { generateAndPersistArtifact } from '@/lib/artifact';
 import { normalizeAction } from '@/lib/fingerprint';
-import { FEATURE_FLAGS } from '@/lib/feature-flags';
-import { CheckCircle, XCircle, AlertTriangle } from 'lucide-react';
+import { canonicalizeService } from '@/lib/service';
+import { categorizeRca } from '@/lib/rca';
+import { CheckCircle, ArrowDownCircle, AlertOctagon, ArrowUpCircle, AlertTriangle } from 'lucide-react';
+
+// G8: richer resolution states. Maps to pattern reinforcement signal:
+//   resolved/mitigated  -> success
+//   rolled-back         -> neutral (don't punish the action that was the
+//                          correct response, even if it didn't fix root cause)
+//   escalated           -> failure
+const OUTCOMES = [
+  { id: 'resolved',    label: 'Resolved',    desc: 'Issue is fixed and the root cause is understood (or will be).', tone: 'success', signal: 'success', Icon: CheckCircle },
+  { id: 'mitigated',   label: 'Mitigated',   desc: 'User impact stopped, but the underlying cause is still open.', tone: 'mitigated', signal: 'success', Icon: AlertOctagon },
+  { id: 'rolled-back', label: 'Rolled back', desc: 'Reverted to a known-good state. Correct action even if not a fix.', tone: 'warn', signal: 'neutral', Icon: ArrowDownCircle },
+  { id: 'escalated',   label: 'Escalated',   desc: 'Handed off — out of your team\'s control to resolve right now.', tone: 'failure', signal: 'failure', Icon: ArrowUpCircle },
+];
+
+const TONE_CLASSES = {
+  success:   'border-green-500/30 text-green-500 hover:bg-green-500/10',
+  mitigated: 'border-teal-400/30 text-teal-400 hover:bg-teal-400/10',
+  warn:      'border-amber-400/30 text-amber-400 hover:bg-amber-400/10',
+  failure:   'border-red-500/30 text-red-500 hover:bg-red-500/10',
+};
 
 export default function ResolveControls({ incidentId, service, firstEvent, patterns, symptomFingerprint = '', isTest = false, onResolved }) {
   const navigate = useNavigate();
-  const [confirming, setConfirming] = useState(null); // 'success' | 'failure'
+  const [confirming, setConfirming] = useState(null); // OUTCOMES.id
   const [submitting, setSubmitting] = useState(false);
   const [rootCauseNote, setRootCauseNote] = useState('');
 
-  async function handleResolve(outcome) {
+  async function handleResolve(outcomeId) {
+    const def = OUTCOMES.find(o => o.id === outcomeId);
+    if (!def) return;
     setSubmitting(true);
-
     try {
-      // Update incident with root cause note and resolve status
+      const rcaText = rootCauseNote.trim();
       await base44.entities.Incident.update(incidentId, {
         status: 'resolved',
-        outcome,
+        outcome: outcomeId,
         resolved_at: new Date().toISOString(),
-        root_cause_note: rootCauseNote || null,
+        root_cause_note: rcaText || null,
+        // G9: categorize on save (server trigger will recompute blind spots)
+        rca_category: rcaText ? categorizeRca(rcaText) : null,
       });
 
-      // Reinforce pattern if there's a first event AND this isn't a test incident
-      if (firstEvent && !isTest) {
+      // G3 + G8: reinforce pattern only when there's a first event,
+      // it's not a test incident, and the resolution signal is success or failure.
+      // Neutral (rolled-back) leaves counters untouched.
+      if (firstEvent && !isTest && def.signal !== 'neutral') {
         const firstAction = firstEvent.message;
         const normFirst = normalizeAction(firstAction);
+        const canon = canonicalizeService(service);
         const existingPattern = patterns.find(
           p =>
-            p.service === service &&
+            (p.canonical_service || canonicalizeService(p.service)) === canon &&
             (p.symptom_fingerprint || '') === symptomFingerprint &&
             normalizeAction(p.first_action) === normFirst
         );
 
         if (existingPattern) {
           await base44.entities.Pattern.update(existingPattern.id, {
-            success_count: outcome === 'success'
+            success_count: def.signal === 'success'
               ? (existingPattern.success_count || 0) + 1
               : (existingPattern.success_count || 0),
-            failure_count: outcome === 'failure'
+            failure_count: def.signal === 'failure'
               ? (existingPattern.failure_count || 0) + 1
               : (existingPattern.failure_count || 0),
           });
         } else {
-          const patternPayload = {
+          await base44.entities.Pattern.create({
             service,
+            canonical_service: canon,
             first_action: firstAction,
             symptom_fingerprint: symptomFingerprint,
-            success_count: outcome === 'success' ? 1 : 0,
-            failure_count: outcome === 'failure' ? 1 : 0,
-          };
-          // T-10: stamp owner when P2 user isolation is on. DB default
-          // (auth.uid()) backs this up.
-          if (FEATURE_FLAGS.P2_USER_ISOLATION) {
-            try {
-              const uid = await base44.auth.currentUserId();
-              if (uid) patternPayload.owner_id = uid;
-            } catch {
-              // non-fatal — DB default will fill in
-            }
-          }
-          await base44.entities.Pattern.create(patternPayload);
+            success_count: def.signal === 'success' ? 1 : 0,
+            failure_count: def.signal === 'failure' ? 1 : 0,
+          });
         }
       }
 
-      // Generate and persist artifact
       await generateAndPersistArtifact(incidentId);
 
       setSubmitting(false);
-      
-      // Redirect to report page
       navigate(`/incident/${incidentId}/report`);
     } catch (error) {
       console.error('Error resolving incident:', error);
@@ -82,15 +95,17 @@ export default function ResolveControls({ incidentId, service, firstEvent, patte
   }
 
   if (confirming) {
+    const def = OUTCOMES.find(o => o.id === confirming);
     return (
       <div className="border border-border p-4">
         <div className="flex items-center gap-2 mb-3">
           <AlertTriangle className="w-4 h-4 text-primary" />
           <span className="font-mono text-sm text-foreground">
-            Resolve as <span className="font-medium">{confirming}</span>?
+            Resolve as <span className="font-medium">{def.label}</span>?
           </span>
         </div>
-        
+        <p className="font-mono text-xs text-muted-foreground/70 mb-3">{def.desc}</p>
+
         <div className="mb-4">
           <label className="block font-mono text-xs text-muted-foreground mb-2">
             What was the actual root cause? <span className="text-muted-foreground/50">(optional)</span>
@@ -102,8 +117,11 @@ export default function ResolveControls({ incidentId, service, firstEvent, patte
             rows={3}
             className="w-full bg-card border border-border px-3 py-2 font-mono text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary transition-colors resize-none"
           />
+          <p className="font-mono text-xs text-muted-foreground/50 mt-1.5">
+            You can add this later — we'll prompt you 24h after resolution.
+          </p>
         </div>
-        
+
         <div className="flex gap-2">
           <button
             onClick={() => handleResolve(confirming)}
@@ -125,21 +143,23 @@ export default function ResolveControls({ incidentId, service, firstEvent, patte
   }
 
   return (
-    <div className="flex gap-3">
-      <button
-        onClick={() => setConfirming('success')}
-        className="flex items-center gap-2 px-4 py-2 border border-green-500/30 text-green-500 font-mono text-xs uppercase tracking-wider hover:bg-green-500/10 transition-all"
-      >
-        <CheckCircle className="w-3.5 h-3.5" />
-        Resolve as success
-      </button>
-      <button
-        onClick={() => setConfirming('failure')}
-        className="flex items-center gap-2 px-4 py-2 border border-red-500/30 text-red-500 font-mono text-xs uppercase tracking-wider hover:bg-red-500/10 transition-all"
-      >
-        <XCircle className="w-3.5 h-3.5" />
-        Resolve as failure
-      </button>
+    <div className="grid grid-cols-2 gap-2">
+      {OUTCOMES.map(o => {
+        const { Icon } = o;
+        return (
+          <button
+            key={o.id}
+            onClick={() => setConfirming(o.id)}
+            className={`flex items-start gap-2 px-3 py-2.5 border text-left font-mono text-xs transition-all ${TONE_CLASSES[o.tone]}`}
+          >
+            <Icon className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+            <div>
+              <div className="uppercase tracking-wider font-medium">{o.label}</div>
+              <div className="text-muted-foreground/70 normal-case tracking-normal mt-0.5">{o.desc}</div>
+            </div>
+          </button>
+        );
+      })}
     </div>
   );
 }

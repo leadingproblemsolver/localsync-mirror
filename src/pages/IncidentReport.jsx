@@ -119,16 +119,24 @@ export default function IncidentReport() {
         <div className="grid grid-cols-3 gap-4">
           <div>
             <div className="font-mono text-xs text-muted-foreground mb-1">Outcome</div>
-            <div className={`flex items-center gap-2 font-mono text-sm font-medium ${
-              artifact.outcome === 'success' ? 'text-green-500' : 'text-red-500'
-            }`}>
-              {artifact.outcome === 'success' ? (
-                <CheckCircle className="w-4 h-4" />
-              ) : (
-                <XCircle className="w-4 h-4" />
-              )}
-              {artifact.outcome.toUpperCase()}
-            </div>
+            {(() => {
+              // G8: rich outcome palette
+              const tone = {
+                resolved:     { cls: 'text-green-500', Icon: CheckCircle },
+                mitigated:    { cls: 'text-teal-400',  Icon: CheckCircle },
+                'rolled-back':{ cls: 'text-amber-400', Icon: XCircle },
+                escalated:    { cls: 'text-red-500',   Icon: XCircle },
+                success:      { cls: 'text-green-500', Icon: CheckCircle },
+                failure:      { cls: 'text-red-500',   Icon: XCircle },
+              }[artifact.outcome] || { cls: 'text-foreground', Icon: CheckCircle };
+              const Icon = tone.Icon;
+              return (
+                <div className={`flex items-center gap-2 font-mono text-sm font-medium ${tone.cls}`}>
+                  <Icon className="w-4 h-4" />
+                  {String(artifact.outcome || '').toUpperCase()}
+                </div>
+              );
+            })()}
           </div>
           <div>
             <div className="font-mono text-xs text-muted-foreground mb-1">TTR</div>
