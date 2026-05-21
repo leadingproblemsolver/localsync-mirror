@@ -139,8 +139,10 @@ export default function ColdStartRepair({ incident, onRepaired }) {
               disabled={busy === 'force'}
               className="bg-card border border-border px-2 py-1 font-mono text-xs text-foreground focus:outline-none focus:border-primary"
             >
-              <option value="failure">failure</option>
-              <option value="success">success</option>
+              <option value="rolled-back">rolled-back</option>
+              <option value="mitigated">mitigated</option>
+              <option value="resolved">resolved</option>
+              <option value="escalated">escalated</option>
             </select>
             <button
               onClick={doForceResolve}
