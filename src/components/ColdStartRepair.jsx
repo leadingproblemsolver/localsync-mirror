@@ -21,7 +21,7 @@ export default function ColdStartRepair({ incident, onRepaired }) {
   const navigate = useNavigate();
   const [busy, setBusy] = useState(null); // 'refp' | 'resug' | 'force'
   const [confirmForce, setConfirmForce] = useState(false);
-  const [forceOutcome, setForceOutcome] = useState('failure');
+  const [forceOutcome, setForceOutcome] = useState('rolled-back');
 
   if (!FEATURE_FLAGS.P3_COLD_START_REPAIR) return null;
   if (!incident || incident.status !== 'active') return null;
