@@ -3,9 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { base44 } from '@/api/base44Client';
 import { generateAndPersistArtifact } from '@/lib/artifact';
-import { normalizeAction } from '@/lib/fingerprint';
 import { canonicalizeService } from '@/lib/service';
 import { categorizeRca } from '@/lib/rca';
+import { getCurrentOrgId } from '@/lib/org';
 import { CheckCircle, ArrowDownCircle, AlertOctagon, ArrowUpCircle, AlertTriangle } from 'lucide-react';
 
 // G8: richer resolution states. Maps to pattern reinforcement signal:
@@ -48,38 +48,27 @@ export default function ResolveControls({ incidentId, service, firstEvent, patte
         rca_category: rcaText ? categorizeRca(rcaText) : null,
       });
 
-      // G3 + G8: reinforce pattern only when there's a first event,
-      // it's not a test incident, and the resolution signal is success or failure.
+      // G3 + G8: reinforce pattern via collision-safe RPC (0006). One atomic
+      // upsert keyed on (org, canonical_service, fingerprint, first_action)
+      // — eliminates the prior read/find/update-or-create race.
       // Neutral (rolled-back) leaves counters untouched.
       if (firstEvent && !isTest && def.signal !== 'neutral') {
-        const firstAction = firstEvent.message;
-        const normFirst = normalizeAction(firstAction);
-        const canon = canonicalizeService(service);
-        const existingPattern = patterns.find(
-          p =>
-            (p.canonical_service || canonicalizeService(p.service)) === canon &&
-            (p.symptom_fingerprint || '') === symptomFingerprint &&
-            normalizeAction(p.first_action) === normFirst
-        );
-
-        if (existingPattern) {
-          await base44.entities.Pattern.update(existingPattern.id, {
-            success_count: def.signal === 'success'
-              ? (existingPattern.success_count || 0) + 1
-              : (existingPattern.success_count || 0),
-            failure_count: def.signal === 'failure'
-              ? (existingPattern.failure_count || 0) + 1
-              : (existingPattern.failure_count || 0),
+        const orgId = await getCurrentOrgId();
+        if (orgId) {
+          const { error: rpcErr } = await base44.supabase.rpc('reinforce_pattern', {
+            _org: orgId,
+            _service: service,
+            _canonical: canonicalizeService(service),
+            _fingerprint: symptomFingerprint || '',
+            _first_action: firstEvent.message,
+            _success: def.signal === 'success' ? 1 : 0,
+            _failure: def.signal === 'failure' ? 1 : 0,
           });
+          if (rpcErr) {
+            console.error('reinforce_pattern failed', rpcErr);
+          }
         } else {
-          await base44.entities.Pattern.create({
-            service,
-            canonical_service: canon,
-            first_action: firstAction,
-            symptom_fingerprint: symptomFingerprint,
-            success_count: def.signal === 'success' ? 1 : 0,
-            failure_count: def.signal === 'failure' ? 1 : 0,
-          });
+          console.warn('reinforce skipped: no org id resolved');
         }
       }
 

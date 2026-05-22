@@ -35,6 +35,8 @@ export async function generateAndPersistArtifact(incidentId) {
         step: idx + 1,
         message: e.message,
         suggested: perStep.suggested ?? null,
+        suggestions_shown: Array.isArray(perStep.suggestionsShown) ? perStep.suggestionsShown : [],
+        matched_rank: perStep.matchedRank ?? null,
         diverged: !!perStep.diverged,
         timestamp: e.created_date || new Date().toISOString(),
       };
