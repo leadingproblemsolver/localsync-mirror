@@ -9,6 +9,21 @@ const successRate = p =>
   ((p.success_count || 0) + 1) /
   ((p.success_count || 0) + (p.failure_count || 0) + 2);
 
+// Recency weight: exponential decay with ~21d half-life.
+// last_seen_at is the canonical recency stamp (added in 0006); fall back
+// to updated_at / created_date for rows written before the migration.
+const DAY_MS = 86_400_000;
+function recencyWeight(p) {
+  const stamp = p.last_seen_at || p.updated_at || p.created_date;
+  if (!stamp) return 0.5;
+  const ageDays = Math.max(0, (Date.now() - new Date(stamp).getTime()) / DAY_MS);
+  return Math.exp(-ageDays / 30); // ~half-life 21d
+}
+
+function rankScore(p, overlap) {
+  return overlap * 0.6 + successRate(p) * 0.3 + recencyWeight(p) * 0.1;
+}
+
 export default function SuggestionsBox({
   symptom,
   service,
@@ -26,10 +41,14 @@ export default function SuggestionsBox({
       return pc === canon;
     });
     const scored = forService
-      .map(p => ({ p, overlap: overlapScore(symptomFingerprint, p.symptom_fingerprint || '') }))
+      .map(p => {
+        const overlap = overlapScore(symptomFingerprint, p.symptom_fingerprint || '');
+        return { p, overlap, score: rankScore(p, overlap) };
+      })
       .filter(x => x.overlap >= 0.2)
       .sort(
         (a, b) =>
+          b.score - a.score ||
           b.overlap - a.overlap ||
           successRate(b.p) - successRate(a.p) ||
           (b.p.success_count || 0) - (a.p.success_count || 0),
