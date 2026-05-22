@@ -215,31 +215,67 @@ export default function IncidentReport() {
           Diagnostic Sequence
         </h2>
         <div className="space-y-2">
-          {Array.isArray(artifact.event_sequence) && artifact.event_sequence.map((event, idx) => (
-            <div key={idx} className="flex gap-3 text-xs">
-              <div className="font-mono font-medium text-muted-foreground flex-shrink-0 w-8">
-                [{event.step}]
-              </div>
-              <div className="flex-1">
-                <div className="font-mono text-sm text-foreground">
-                  {event.message}
-                  {event.diverged && (
-                    <span className="ml-2 font-mono text-[10px] uppercase tracking-wider text-amber-500">
-                      diverged
-                    </span>
-                  )}
+          {Array.isArray(artifact.event_sequence) && artifact.event_sequence.map((event, idx) => {
+            const shown = Array.isArray(event.suggestions_shown) ? event.suggestions_shown : [];
+            const matched = event.matched_rank ?? null;
+            return (
+              <div key={idx} className="flex gap-3 text-xs">
+                <div className="font-mono font-medium text-muted-foreground flex-shrink-0 w-8">
+                  [{event.step}]
                 </div>
-                {event.suggested && event.diverged && (
-                  <div className="font-mono text-xs text-muted-foreground/70 mt-0.5">
-                    suggested: {event.suggested}
+                <div className="flex-1">
+                  <div className="font-mono text-sm text-foreground">
+                    {event.message}
+                    {event.diverged && (
+                      <span className="ml-2 font-mono text-[10px] uppercase tracking-wider text-amber-500">
+                        diverged
+                      </span>
+                    )}
+                    {!event.diverged && matched && matched > 1 && (
+                      <span className="ml-2 font-mono text-[10px] uppercase tracking-wider text-muted-foreground/70">
+                        matched rank {matched}
+                      </span>
+                    )}
                   </div>
-                )}
-                <div className="font-mono text-xs text-muted-foreground/50 mt-0.5">
-                  {event.timestamp}
+                  {shown.length > 0 && (
+                    <details className="mt-1">
+                      <summary className="font-mono text-[11px] text-muted-foreground/60 cursor-pointer hover:text-muted-foreground select-none">
+                        Suggestions shown ({shown.length})
+                      </summary>
+                      <ol className="mt-1 ml-3 space-y-0.5">
+                        {shown.map((s, i) => (
+                          <li
+                            key={i}
+                            className={`font-mono text-[11px] ${
+                              matched === i + 1
+                                ? 'text-foreground'
+                                : 'text-muted-foreground/70'
+                            }`}
+                          >
+                            <span className="text-muted-foreground/40">{i + 1}.</span>{' '}
+                            {s}
+                            {matched === i + 1 && (
+                              <span className="ml-1 text-[10px] uppercase tracking-wider text-green-500">
+                                chosen
+                              </span>
+                            )}
+                          </li>
+                        ))}
+                      </ol>
+                    </details>
+                  )}
+                  {shown.length === 0 && event.suggested && event.diverged && (
+                    <div className="font-mono text-xs text-muted-foreground/70 mt-0.5">
+                      suggested: {event.suggested}
+                    </div>
+                  )}
+                  <div className="font-mono text-xs text-muted-foreground/50 mt-0.5">
+                    {event.timestamp}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
 
         </div>
       </div>
