@@ -16,6 +16,7 @@ export default function AddEventForm({
   currentStepCount = 0,
 }) {
   const [message, setMessage] = useState('');
+  const [rationale, setRationale] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const textareaRef = useRef(null);
   const nextStepRef = useRef(initialStepOrder);
@@ -59,12 +60,17 @@ export default function AddEventForm({
         ? [topSuggestion]
         : [];
 
+    const trimmedRationale = rationale.trim();
     const payload = {
       incident_id: incidentId,
       message: message.trim(),
       step_order: stepOrder,
       event_type: 'message',
     };
+    if (trimmedRationale) {
+      // Gap A: capture the "why" alongside the what. Optional; nullable in DB.
+      payload.rationale = trimmedRationale;
+    }
 
     if (isFirstEvent && rankedShown.length > 0) {
       payload.suggested_action = rankedShown[0];
@@ -100,6 +106,7 @@ export default function AddEventForm({
 
       nextStepRef.current = stepOrder + 1;
       setMessage('');
+      setRationale('');
 
       if (onPreFillValueChange) {
         onPreFillValueChange(null);
