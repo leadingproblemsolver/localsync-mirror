@@ -34,6 +34,7 @@ export async function generateAndPersistArtifact(incidentId) {
       return {
         step: idx + 1,
         message: e.message,
+        rationale: e.rationale || null,
         suggested: perStep.suggested ?? null,
         suggestions_shown: Array.isArray(perStep.suggestionsShown) ? perStep.suggestionsShown : [],
         matched_rank: perStep.matchedRank ?? null,
@@ -104,7 +105,10 @@ function generateMarkdownExport(data) {
     : `${divergenceHeadline}\n\nNo divergence — actions matched suggestions.`;
 
   const eventLines = data.eventSequence
-    .map(e => `**[${e.step}]** ${e.message}${e.diverged ? '  _(diverged)_' : ''}  \`${e.timestamp}\``)
+    .map(e => {
+      const head = `**[${e.step}]** ${e.message}${e.diverged ? '  _(diverged)_' : ''}  \`${e.timestamp}\``;
+      return e.rationale ? `${head}\n    > why: ${e.rationale.replace(/\n+/g, ' ')}` : head;
+    })
     .join('\n');
 
   return `# TraceCrumb Incident Report

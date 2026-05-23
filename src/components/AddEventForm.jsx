@@ -136,6 +136,19 @@ export default function AddEventForm({
           }
         }}
       />
+      {/* Gap A: optional "why" — signals ruled out, what made you pick this. */}
+      <textarea
+        value={rationale}
+        onChange={e => setRationale(e.target.value)}
+        placeholder="Why? Signals ruled out, what made you pick this (optional)"
+        rows={2}
+        className="w-full bg-card/40 border border-border/60 px-4 py-2 font-mono text-xs italic text-muted-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 focus:text-foreground transition-colors resize-none"
+        onKeyDown={e => {
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+            handleSubmit(e);
+          }
+        }}
+      />
       <div className="flex items-center justify-between">
         <span className="font-mono text-xs text-muted-foreground/40">⌘↵ to submit</span>
         <button

@@ -9,6 +9,7 @@ filename order** on top of `schema.sql`:
 |---|---|
 | `0005_team_visibility_and_p1.sql` | Organizations + memberships (G1), canonical_service (G2), richer resolution states (G8), deferred postmortem (G7), blind-spot inference (G9) |
 | `0006_pattern_aging_and_robustness.sql` | `schema_migrations` ledger, `patterns.last_seen_at` for recency weighting, `reinforce_pattern()` collision-safe upsert RPC |
+| `0007_event_rationale.sql` | Optional `incident_events.rationale` — the "why" alongside each logged action (Gap A) |
 
 To apply against a Supabase project: open the SQL editor in the Supabase
 dashboard, paste the contents of each file, and run in order. Or via psql:

@@ -237,6 +237,12 @@ export default function IncidentReport() {
                       </span>
                     )}
                   </div>
+                  {event.rationale && (
+                    <div className="mt-1 pl-3 border-l border-border/40 font-mono text-xs italic text-muted-foreground/70 whitespace-pre-wrap">
+                      <span className="not-italic text-muted-foreground/50 mr-1">why:</span>
+                      {event.rationale}
+                    </div>
+                  )}
                   {shown.length > 0 && (
                     <details className="mt-1">
                       <summary className="font-mono text-[11px] text-muted-foreground/60 cursor-pointer hover:text-muted-foreground select-none">
