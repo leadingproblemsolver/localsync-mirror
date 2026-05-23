@@ -16,6 +16,7 @@ export default function AddEventForm({
   currentStepCount = 0,
 }) {
   const [message, setMessage] = useState('');
+  const [rationale, setRationale] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const textareaRef = useRef(null);
   const nextStepRef = useRef(initialStepOrder);
@@ -59,12 +60,17 @@ export default function AddEventForm({
         ? [topSuggestion]
         : [];
 
+    const trimmedRationale = rationale.trim();
     const payload = {
       incident_id: incidentId,
       message: message.trim(),
       step_order: stepOrder,
       event_type: 'message',
     };
+    if (trimmedRationale) {
+      // Gap A: capture the "why" alongside the what. Optional; nullable in DB.
+      payload.rationale = trimmedRationale;
+    }
 
     if (isFirstEvent && rankedShown.length > 0) {
       payload.suggested_action = rankedShown[0];
@@ -100,6 +106,7 @@ export default function AddEventForm({
 
       nextStepRef.current = stepOrder + 1;
       setMessage('');
+      setRationale('');
 
       if (onPreFillValueChange) {
         onPreFillValueChange(null);
@@ -123,6 +130,19 @@ export default function AddEventForm({
         placeholder={placeholder}
         rows={3}
         className="w-full bg-card border border-border px-4 py-3 font-mono text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary transition-colors resize-none"
+        onKeyDown={e => {
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+            handleSubmit(e);
+          }
+        }}
+      />
+      {/* Gap A: optional "why" — signals ruled out, what made you pick this. */}
+      <textarea
+        value={rationale}
+        onChange={e => setRationale(e.target.value)}
+        placeholder="Why? Signals ruled out, what made you pick this (optional)"
+        rows={2}
+        className="w-full bg-card/40 border border-border/60 px-4 py-2 font-mono text-xs italic text-muted-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 focus:text-foreground transition-colors resize-none"
         onKeyDown={e => {
           if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
             handleSubmit(e);

@@ -59,6 +59,11 @@ export default function EventTimeline({ events }) {
               <p className="font-mono text-sm text-foreground leading-relaxed">
                 {event.message}
               </p>
+              {event.rationale ? (
+                <div className="mt-1.5 pl-3 border-l border-border/40 font-mono text-xs italic text-muted-foreground/70 leading-relaxed whitespace-pre-wrap">
+                  {event.rationale}
+                </div>
+              ) : null}
             </div>
 
             {/* Logger + timestamp */}
