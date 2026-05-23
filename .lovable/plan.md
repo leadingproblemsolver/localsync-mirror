@@ -1,127 +1,118 @@
+# Gap A — Capture Rationale on Every Logged Action
 
-## Scope
+**Why this gap, why now.** The spec's `codebase_gap_registry` ranks **A** as the only `critical` gap and puts it first in `build_order` ("A and D first — without accurate capture … the feedback loop that improves everything else is broken"). It also maps directly to the prospect signal already captured for Kwasi: *"reasoning chains, signals ruled out, why rollback chosen."* Today `IncidentEvent` stores **what** happened (`message`) but has no field for **why** — so the product calls its output a "decision trace" while it is structurally an action log. Closing A turns every later feature (suggestions, divergence, postmortem, blind spots) into reasoning-aware, not just action-aware.
 
-From the uploaded `legaps.json` falsifier, the following are NOT yet closed and directly impact functional robustness (correctness / race safety / signal quality). Already-shipped items (G1 org RLS, G2 canonical_service backfill, error boundaries, IncidentReport home nav, age-aware polling) are out of scope.
+Scope is deliberately narrow: one optional field, one secondary input, one subdued render, one export line. No behavior change for users who skip it.
 
-Closing:
+## What changes (user-visible)
 
-1. **Divergence reads the full `suggestions_shown` array, not only rank‑1** (correctness — current metric overcounts divergence)
-2. **Pattern decay / recency weighting** (ranking quality — stale wins drown out fresh signal)
-3. **Collision‑safe pattern reinforcement** (race under concurrent resolves on the same org/service/fingerprint/action)
-4. **Migration ledger** (operational safety — knows what ran)
-5. **Ranked suggestions exposed in the report** (traceability for the data we now persist)
+1. **AddEventForm** gets a second, smaller textarea under the action input: *"Why? (optional — signals ruled out, what made you pick this)"*. Empty rationale is allowed and is the common case.
+2. **EventTimeline** renders the rationale as a subdued italic line beneath the action when present. Nothing shown when absent — no empty placeholder.
+3. **IncidentReport / markdown export** includes rationale on its own indented line per step when present.
+4. **artifact.js `eventSequence`** carries `rationale` so downstream consumers (artifact row, postmortem JSON) keep the field.
 
-Out of scope: LLM ranking, broader heuristic rule expansion, polling tuning, schema redesign.
+Nothing else changes: divergence math, suggestions ranking, patterns, RLS, and step counting are untouched.
 
-## Technical changes
+## Files to edit
 
-### New migration `db/migrations/0006_pattern_aging_and_robustness.sql`
+```text
+db/migrations/0007_event_rationale.sql   NEW   add nullable column + comment
+src/components/AddEventForm.jsx          EDIT  second textarea, include in payload
+src/components/EventTimeline.jsx         EDIT  render rationale when present
+src/lib/artifact.js                      EDIT  include rationale in eventSequence + markdown
+src/pages/IncidentReport.jsx             EDIT  render rationale in per-step block
+db/README.md                             EDIT  log 0007
+```
+
+No schema changes to `patterns`, `incidents`, or RLS. No new RPCs.
+
+## Technical details
+
+### Migration `0007_event_rationale.sql` (idempotent, forward-only)
 
 ```sql
 BEGIN;
 
--- ---------- 1. migration ledger ----------
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  version     text PRIMARY KEY,
-  applied_at  timestamptz NOT NULL DEFAULT now(),
-  notes       text
-);
+ALTER TABLE incident_events
+  ADD COLUMN IF NOT EXISTS rationale text;
+
+COMMENT ON COLUMN incident_events.rationale IS
+  'Optional free-text "why" for this step: signals ruled out, reasoning, ' ||
+  'why this action was chosen. Captured at log time. Nullable by design — ' ||
+  'most steps will not have one and that is fine.';
+
 INSERT INTO schema_migrations(version, notes) VALUES
-  ('0000_baseline', 'db/schema.sql'),
-  ('0005_team_visibility_and_p1', 'orgs, canonical_service, G6/7/8/9'),
-  ('0006_pattern_aging_and_robustness', 'last_seen_at, decay, upsert RPC')
+  ('0007_event_rationale', 'optional rationale on incident_events')
 ON CONFLICT (version) DO NOTHING;
-
--- ---------- 2. pattern aging columns ----------
-ALTER TABLE patterns
-  ADD COLUMN IF NOT EXISTS last_seen_at timestamptz NOT NULL DEFAULT now();
-UPDATE patterns SET last_seen_at = COALESCE(updated_at, created_date)
-  WHERE last_seen_at = created_date;
-CREATE INDEX IF NOT EXISTS patterns_last_seen_idx ON patterns(last_seen_at DESC);
-
--- ---------- 3. collision-safe reinforce RPC ----------
--- Single atomic upsert keyed on the existing patterns_identity_unique
--- (org_id, canonical_service, symptom_fingerprint, first_action).
--- Eliminates the read-modify-write race in ResolveControls.
-CREATE OR REPLACE FUNCTION public.reinforce_pattern(
-  _org uuid, _service text, _canonical text,
-  _fingerprint text, _first_action text,
-  _success int, _failure int
-) RETURNS uuid LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
-DECLARE pid uuid;
-BEGIN
-  IF NOT public.is_org_member(_org, auth.uid()) THEN
-    RAISE EXCEPTION 'not a member of org %', _org USING ERRCODE = '42501';
-  END IF;
-  INSERT INTO patterns(
-    org_id, owner_id, service, canonical_service,
-    symptom_fingerprint, first_action,
-    success_count, failure_count, last_seen_at
-  ) VALUES (
-    _org, auth.uid(), _service, _canonical,
-    _fingerprint, _first_action,
-    GREATEST(_success,0), GREATEST(_failure,0), now()
-  )
-  ON CONFLICT (org_id, canonical_service, symptom_fingerprint, first_action)
-  DO UPDATE SET
-    success_count = patterns.success_count + EXCLUDED.success_count,
-    failure_count = patterns.failure_count + EXCLUDED.failure_count,
-    last_seen_at  = now()
-  RETURNING id INTO pid;
-  RETURN pid;
-END $$;
 
 COMMIT;
 ```
 
-### Client changes
+No RLS change needed: existing `incident_events` policies already gate by parent incident's org/membership.
 
-**`src/lib/divergence.js`** — accept the ranked `suggestions_shown` array per event and mark a step as non‑divergent if the user's action matches **any** suggestion shown (top‑3), tracking the matched rank. Falls back to current top‑1 behavior when `suggestions_shown` is absent (legacy rows).
-- New `perStep` shape: `{ step, diverged, suggested, suggestionsShown, matchedRank, actual }`.
-- `divergenceRate` and `firstDivergentStep` recomputed from the broader match.
-- `src/lib/artifact.js` passes the richer per‑step data into `event_sequence` (`suggestions_shown`, `matched_rank`).
+### AddEventForm.jsx
 
-**`src/components/SuggestionsBox.jsx`** — recency‑weighted scoring:
+- Add `rationale` local state (string), reset on submit.
+- New textarea (`rows={2}`, muted styling, placeholder "Why? Signals ruled out, what made you pick this (optional)").
+- `payload.rationale = rationale.trim() || null` — only send when non-empty so PostgREST leaves nullable default alone for empty.
+- ⌘↵ still submits.
+
+### EventTimeline.jsx
+
+- After the existing `{event.message}` block, render:
+
+```jsx
+{event.rationale ? (
+  <div className="mt-1 pl-4 border-l border-border/40 font-mono text-xs italic text-muted-foreground/70">
+    {event.rationale}
+  </div>
+) : null}
 ```
-score = overlap * 0.6 + successRate * 0.3 + recency * 0.1
-recency = exp(-ageDays / 30)   // half-life ~21d
+
+Keeps current visual hierarchy intact; rationale reads as annotation, not co-equal content.
+
+### artifact.js
+
+- In the `eventSequence.map`, include `rationale: e.rationale || null`.
+- In `generateMarkdownExport`, when a step has rationale, emit:
+
+```text
+**[3]** Rolled back deploy abc123  _(diverged)_  `14:32:10`
+    > why: traffic dropped on new pod but old pod was healthy
 ```
-Sort key changes; tie‑breakers unchanged. Read `p.last_seen_at` (falls back to `updated_at`/`created_date`).
 
-**`src/components/ResolveControls.jsx`** — replace the read/find/update-or-create block with one call:
-```js
-await base44.supabase.rpc('reinforce_pattern', {
-  _org: await getCurrentOrgId(),
-  _service: service,
-  _canonical: canonicalizeService(service),
-  _fingerprint: symptomFingerprint,
-  _first_action: firstAction,
-  _success: def.signal === 'success' ? 1 : 0,
-  _failure: def.signal === 'failure' ? 1 : 0,
-});
-```
-Removes the `patterns` prop dependency for write‑path correctness.
+(Indented `> why:` line; only when present.)
 
-**`src/pages/IncidentReport.jsx`** — add a small "Suggestions shown" block per diagnostic step (collapsed by default) listing the ranked list with the chosen rank highlighted. Pulls from `event_sequence[i].suggestions_shown` + `matched_rank`. No new endpoint.
+### IncidentReport.jsx
 
-**`db/README.md`** — append a row for `0006_pattern_aging_and_robustness.sql` plus a one‑line note that the ledger now records applied versions.
+- In the per-step block (next to "Suggestions shown"), if `e.rationale` is set, render a subdued "Why" row using the same border-left treatment as the timeline.
 
-## Sequencing
+## Failure modes considered
 
-1. Write `db/migrations/0006_...sql` (idempotent; safe re‑run).
-2. Update `divergence.js` + `artifact.js` (pure functions, no DB).
-3. Update `SuggestionsBox.jsx` for recency weighting.
-4. Update `ResolveControls.jsx` to call the RPC.
-5. Update `IncidentReport.jsx` for ranked‑suggestion display.
-6. Update `db/README.md`.
+- **Legacy rows have `rationale = NULL`** — every read site uses `e.rationale || null` / truthy check, so old incidents render identically to today.
+- **PostgREST write of unknown column** — blocked until migration 0007 is deployed. Mitigation: deploy migration *before* shipping client. README updated to call this out.
+- **User pastes a wall of text** — no length cap in MVP; field is `text`. Worth revisiting if abuse appears, but premature now.
+- **Pattern reinforcement** — explicitly out of scope. Rationale is *not* fed into `reinforce_pattern` or fingerprinting in this gap; that would be Gap C territory and changes the pattern identity surface.
 
-## Out of scope (deferred)
+## Out of scope (named so it stays out)
 
-- LLM normalization, heuristic rule expansion (G19 / `getSuggestions` coverage)
-- Polling tuning beyond what already exists
-- Pattern decay applied at write (only ranking‑side decay in v1)
-- Edge functions — none required by these changes
+- Gap D (semantic divergence via `overlapScore`) — separate change, separate plan.
+- Gap C (resolution summary on Pattern) — would consume rationale, but only after A is live and producing data.
+- Any UI prompt that forces rationale entry. Optional means optional; coercion would tank logging speed and violate the "behavior over structure" rule in `lean_build_engine`.
+- Backfill of historical events. They stay null.
 
-## What the user must do after merge
+## Verification
 
-Run `db/migrations/0006_pattern_aging_and_robustness.sql` in the Supabase SQL editor. No env changes, no Edge Functions.
+1. Run migration; confirm `\d incident_events` shows `rationale text` and `schema_migrations` has `0007_event_rationale`.
+2. Open an incident, log a step with rationale → reload → rationale persists, renders italic.
+3. Log a step without rationale → renders exactly as today.
+4. Export markdown → step with rationale shows indented `> why:` line; step without doesn't.
+5. Open a pre-migration incident → all old events render unchanged.
+
+## Build order
+
+1. Migration file
+2. AddEventForm (write path)
+3. EventTimeline (read path)
+4. artifact.js + IncidentReport.jsx (export path)
+5. db/README.md note
