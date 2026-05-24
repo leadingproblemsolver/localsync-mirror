@@ -41,7 +41,7 @@ In the dashboard for your project, you only need:
 
 | Area | Action |
 |---|---|
-| **Database → SQL Editor** | Run `db/schema.sql`, then `db/migrations/0005_team_visibility_and_p1.sql`, in that order. Both are idempotent. |
+| **Database → SQL Editor** | Run in order, each idempotent: `db/schema.sql` → `db/migrations/0005_team_visibility_and_p1.sql` → `db/migrations/0006_pattern_aging_and_robustness.sql` → `db/migrations/0007_event_rationale.sql`. |
 | **Authentication → Providers** | Enable Email (password). Enable Google OAuth if you want the social login button to work — set redirect to `${SITE_URL}/`. |
 | **Authentication → URL Configuration** | Set Site URL to your deployed origin. Add `${SITE_URL}/reset-password` to Redirect URLs (used by `auth.resetPasswordForEmail`). |
 | **Project Settings → API** | Copy Project URL → `VITE_SUPABASE_URL`. Copy `anon` public key → `VITE_SUPABASE_ANON_KEY`. |
